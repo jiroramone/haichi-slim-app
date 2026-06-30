@@ -1033,43 +1033,7 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
         {owner_section_html}
     </div>"""
     
-    perf_score = row_data.get('総合指数', 0.0)
-    perf_rank = row_data.get('前走着順')
-    perf_rank_txt = f"{int(perf_rank)}着" if (pd.notnull(perf_rank) and not pd.isna(perf_rank)) else "-"
-    perf_interval = row_data.get('レース間隔', '-')
-    perf_level = row_data.get('レベル点', 0.0)
-    perf_jiri = row_data.get('自力点', 0.0)
-    perf_bonus = row_data.get('ボーナス減点', 0.0)
-    perf_hoso = row_data.get('好走/次走あり', '-')
-    perf_diff = row_data.get('前走着差', '-')
-    perf_leg = row_data.get('前走脚質', '-')
-    perf_kyuyo = row_data.get('長期休養フラグ', '-')
-    
-    kyuyo_html = ""
-    if "🚩" in str(perf_kyuyo): 
-        kyuyo_html = f"""<div style="background-color: #E8F5E9; color: #2E7D32; font-size: 11px; font-weight: bold; padding: 4px; border-radius: 4px; margin-top: 4px; border: 1px solid #A5D6A7;">{perf_kyuyo}</div>"""
-    elif perf_kyuyo != "-": 
-        kyuyo_html = f"""<div style="background-color: #F5F5F5; color: #616161; font-size: 11px; padding: 4px; border-radius: 4px; margin-top: 4px; border: 1px solid #E0E0E0;">{perf_kyuyo}</div>"""
-
-    perf_section_html = f"""
-    <div style="margin-top: 8px; margin-bottom: 8px; padding: 8px 12px; background-color: #FFFDE7; border: 1px solid #FFF59D; border-radius: 8px; {badge_opacity}">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <span style="font-weight: bold; font-size: 13px; color: #F57F17; display: flex; align-items: center; gap: 4px;"><span>⚡</span> <span>黄金比指数:</span></span>
-            <span style="font-weight: bold; font-size: 14px; color: #E65100;">{perf_score if pd.notnull(perf_score) else 0.0} 点</span>
-        </div>
-        <div style="font-size: 11.5px; color: #5D4037; display: flex; flex-wrap: wrap; row-gap: 2px; column-gap: 8px;">
-            <span>前走: <strong>{perf_rank_txt}</strong> ({perf_diff})</span>
-            <span>間隔: <strong>{perf_interval}</strong></span>
-            <span>脚質: <strong>{perf_leg}</strong></span>
-            <span>相手: <strong>{perf_level if pd.notnull(perf_level) else 0.0}点</strong></span>
-            <span>自力: <strong>{perf_jiri if pd.notnull(perf_jiri) else 0.0}点</strong></span>
-            <span>加減: <strong>{perf_bonus if pd.notnull(perf_bonus) else 0.0}点</strong></span>
-            <div style="width: 100%; border-top: 1px dashed #CCC; margin-top: 4px; padding-top: 4px; font-size: 10.5px;">
-                {perf_hoso}
-            </div>
-        </div>
-        {kyuyo_html}
-    </div>"""
+    perf_section_html = ""  # 黄金比指数欄を削除
     
     hanro_html = ""
 

@@ -263,7 +263,7 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     CSVファイル名: data/entries_YYYYMMDD_VV.csv
     """
     import os
-    csv_path = os.path.join("data", f"entries_{target_date_str}_{keibajo_code}.csv")
+    csv_path = os.path.join("data", f"entries_{target_date_str}.csv")
     db_ok = False
 
     try:
@@ -304,12 +304,16 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
         logger.warning(f"DB接続失敗 → CSVフォールバック: {e}")
         df = pd.DataFrame()
 
-    # CSVフォールバック
+    # CSVフォールバック（1日1ファイル形式・場コードでフィルタ）
     if not db_ok:
         if os.path.exists(csv_path):
             try:
-                df = pd.read_csv(csv_path, dtype=str)
-                logger.info(f"CSV読み込み: {csv_path} ({len(df)}行)")
+                df_all = pd.read_csv(csv_path, dtype=str)
+                if "場コード" in df_all.columns:
+                    df = df_all[df_all["場コード"] == keibajo_code].copy()
+                else:
+                    df = df_all.copy()
+                logger.info(f"CSV読み込み: {csv_path} 場コード={keibajo_code} ({len(df)}行)")
             except Exception as e:
                 logger.error(f"CSV読み込みエラー: {e}")
                 return pd.DataFrame()

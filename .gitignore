@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+
+# Streamlit secrets（絶対にpushしない）
+.streamlit/secrets.toml
+
+# ローカル専用ファイル
+*.log
+app_sql.py
+
+# OS
+.DS_Store
+Thumbs.db

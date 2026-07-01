@@ -210,9 +210,6 @@ def get_master_history_data():
             df["Ｒ"]   = pd.to_numeric(df["Ｒ"], errors="coerce")
             df["馬番"] = pd.to_numeric(df["馬番"], errors="coerce")
             df["馬名"] = df["馬名"].apply(clean_horse_name)
-            # tansho_oddsは4桁整数格納(例:0030=3.0倍) → /10
-            if "オッズ" in df.columns:
-                df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
             logger.info(f"DB履歴取得: {len(df)}件")
             return df
     except Exception as e:
@@ -227,9 +224,6 @@ def get_master_history_data():
             df["馬番"] = pd.to_numeric(df.get("馬番", pd.Series()), errors="coerce")
             if "馬名" in df.columns:
                 df["馬名"] = df["馬名"].apply(clean_horse_name)
-            # tansho_oddsは4桁整数格納(例:0030=3.0倍) → /10
-            if "オッズ" in df.columns:
-                df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
             logger.info(f"CSV履歴読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -333,13 +327,9 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     for _col in ["馬番", "枠番", "Ｒ", "頭数"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce").fillna(0).astype(int)
-    for _col in ["斤量", "人気"]:
+    for _col in ["斤量", "オッズ", "人気"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce")
-    # DBのtansho_oddsは4桁ゼロ埋め整数格納(例:0030=3.0倍, 0148=14.8倍) → 常に/10
-    if "オッズ" in df.columns:
-        _o = pd.to_numeric(df["オッズ"], errors="coerce")
-        df["オッズ"] = (_o / 10.0).round(1)
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
@@ -402,9 +392,7 @@ def get_latest_odds_from_db(target_date_str: str, keibajo_code: str) -> pd.DataF
                 if c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors="coerce")
             if "odds_val" in df.columns:
-                _ov = pd.to_numeric(df["odds_val"], errors="coerce")
-                # DBと同じ4桁整数形式(例:0030=3.0倍) → 常に/10
-                df["odds_val"] = (_ov / 10.0).round(1)
+                df["odds_val"] = pd.to_numeric(df["odds_val"], errors="coerce")
             logger.info(f"CSVオッズ読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -1250,18 +1238,7 @@ def render_horse_cards_carousel(h_list, selected_venue, curr_df, cards_per_row=3
 st.sidebar.markdown("### 🧬 黄金比能力データベース")
 history_df = get_master_history_data()
 
-if history_df is not None and not history_df.empty:
-    st.sidebar.success(f"自動ロード完了\n({len(history_df)}件のレコード)")
-    min_d = history_df["date"].min()
-    max_d = history_df["date"].max()
-    st.sidebar.caption(f"DB収録期間: {min_d.strftime('%Y-%m-%d')} 〜 {max_d.strftime('%Y-%m-%d')}")
-else:
-    st.sidebar.warning("過去実績DBが取得できません。手動でCSVをロードしてください。")
-    uploaded_history = st.sidebar.file_uploader("過去履歴DB-CSVを手動ロード", type=["csv"], key="history_manual")
-    if uploaded_history is not None:
-        history_df = get_manual_history_data(uploaded_history.getvalue())
-        if history_df is not None:
-            st.sidebar.success(f"手動ロード完了: {len(history_df)}件")
+# history_df: DB接続時のみ使用
 
 st.sidebar.markdown("---")
 global_target_date = st.sidebar.date_input("判定基準日（開催日）", date.today())
@@ -1287,17 +1264,8 @@ with st.spinner("📡 当日出馬表をDBから取得中..."):
 
 if all_entries_df.empty:
     st.sidebar.error("❌ 出馬表がDBに見つかりません。開催日・競馬場を確認してください。")
-    # フォールバック: 手動CSVアップロード
-    st.sidebar.markdown("### 📁 手動CSVアップロード（代替）")
-    col1, col2, col3 = st.columns(3)
-    with col1: st.subheader("1. 前日の結果CSV")
-    with col2: st.subheader("2. 当日の出馬表CSV")
-    with col3: st.subheader("3. 坂路調教ラップCSV（任意）")
-    prev_files = col1.file_uploader("前日の結果CSVを選択", type=["csv"], key="prev", accept_multiple_files=True)
-    curr_files = col2.file_uploader("当日の出馬表CSVを選択", type=["csv"], key="curr", accept_multiple_files=True)
-    uploaded_hanro = col3.file_uploader("坂路調教ラップCSVを選択", type=["csv"], key="hanro_upload",
-                                        help="馬名, 年月日, Time1, Lap4... の列を含むこと")
-    _use_db_entries = False
+    st.warning("⚠️ 選択した日付・競馬場のデータがDBに存在しません。サイドバーで開催日と競馬場を確認してください。")
+    st.stop()
 else:
     st.sidebar.success(f"✅ {len(all_entries_df)}頭の出走データを取得")
     race_count = all_entries_df["Ｒ"].nunique()

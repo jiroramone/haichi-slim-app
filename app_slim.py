@@ -210,6 +210,8 @@ def get_master_history_data():
             df["Ｒ"]   = pd.to_numeric(df["Ｒ"], errors="coerce")
             df["馬番"] = pd.to_numeric(df["馬番"], errors="coerce")
             df["馬名"] = df["馬名"].apply(clean_horse_name)
+            if "オッズ" in df.columns:
+                df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
             logger.info(f"DB履歴取得: {len(df)}件")
             return df
     except Exception as e:
@@ -224,6 +226,8 @@ def get_master_history_data():
             df["馬番"] = pd.to_numeric(df.get("馬番", pd.Series()), errors="coerce")
             if "馬名" in df.columns:
                 df["馬名"] = df["馬名"].apply(clean_horse_name)
+            if "オッズ" in df.columns:
+                df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
             logger.info(f"CSV履歴読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -256,6 +260,44 @@ def get_manual_history_data(file_bytes_content):
 # ============================================================
 # 当日出馬表・全レース一括取得（2段階キャッシュ戦略）
 # ============================================================
+@st.cache_data(ttl=60)
+def get_today_venues(target_date_str: str) -> list:
+    """当日開催場をCSVファイル名 → DB の順で取得。失敗時は全場返す。
+    CSVファイル名: data/entries_YYYYMMDD_VV.csv のVVから競馬場コードを判定
+    """
+    import glob
+    CODE_TO_VENUE = {v: k for k, v in JRA_VENUES.items()}
+
+    # ① data/entries_YYYYMMDD_VV.csv のファイル名から判定（最速）
+    csv_files = glob.glob(os.path.join("data", f"entries_{target_date_str}_*.csv"))
+    venues = []
+    for cf in sorted(csv_files):
+        fname = os.path.basename(cf)
+        parts = fname.replace(".csv", "").split("_")
+        if len(parts) >= 3:
+            code = parts[-1].zfill(2)
+            v = CODE_TO_VENUE.get(code)
+            if v and v not in venues:
+                venues.append(v)
+    if venues:
+        return venues
+
+    # ② DBから取得
+    try:
+        nen, gappi = target_date_str[:4], target_date_str[4:]
+        q = ("SELECT DISTINCT r.keibajo_code FROM race_shosai r "
+             "WHERE r.kaisai_nen = %s AND r.kaisai_gappi = %s ORDER BY r.keibajo_code")
+        df = run_query(q, params=(nen, gappi))
+        if not df.empty:
+            venues_db = [CODE_TO_VENUE[c] for c in df["keibajo_code"].tolist() if c in CODE_TO_VENUE]
+            if venues_db:
+                return venues_db
+    except Exception as e:
+        logger.warning(f"DB当日開催場取得失敗: {e}")
+
+    # ③ フォールバック: 全場
+    return list(JRA_VENUES.keys())
+
 @st.cache_data(ttl=300)
 def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFrame:
     """
@@ -327,9 +369,12 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     for _col in ["馬番", "枠番", "Ｒ", "頭数"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce").fillna(0).astype(int)
-    for _col in ["斤量", "オッズ", "人気"]:
+    for _col in ["斤量", "人気"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce")
+    # DBのtansho_oddsは4桁整数格納(例:0030=3.0倍) → 常に/10
+    if "オッズ" in df.columns:
+        df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
@@ -392,7 +437,8 @@ def get_latest_odds_from_db(target_date_str: str, keibajo_code: str) -> pd.DataF
                 if c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors="coerce")
             if "odds_val" in df.columns:
-                df["odds_val"] = pd.to_numeric(df["odds_val"], errors="coerce")
+                _ov = pd.to_numeric(df["odds_val"], errors="coerce")
+                df["odds_val"] = (_ov / 10.0).round(1)
             logger.info(f"CSVオッズ読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -922,7 +968,11 @@ def find_all_pair_partners_detailed(row, full_df):
                             else: 
                                 chaku_status = "<span style='color:#888;'>凡走(4着以下)</span>"
                         
-                        odds_txt = f"単勝 {m_odds}倍" if pd.notnull(m_odds) and str(m_odds).strip() not in ["", "nan"] else "単勝 未取得"
+                        try:
+                            _mo = round(float(m_odds), 1)
+                            odds_txt = f"単勝 {_mo}倍" if pd.notnull(m_odds) and str(m_odds).strip() not in ["", "nan"] else "単勝 未取得"
+                        except (ValueError, TypeError):
+                            odds_txt = "単勝 未取得"
                         pop_txt = f"{int(m_pop)}人気" if pd.notnull(m_pop) and str(m_pop).strip() not in ["", "nan"] else "未設定"
                         
                         if col_name == "騎手":
@@ -997,7 +1047,7 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
     p_val = row_data.get('人気', None)
     try:
         o_f = float(o_val)
-        odds_txt = f"{o_f}倍" if o_f > 0 else "未取得"
+        odds_txt = f"{round(o_f, 1)}倍" if o_f > 0 else "未取得"
     except (ValueError, TypeError):
         odds_txt = "未取得"
     try:
@@ -1198,31 +1248,24 @@ def render_horse_cards_carousel(h_list, selected_venue, curr_df, cards_per_row=3
 # -------------------------------------------------------------------------
 # メイン処理ブロック（DB版）
 # -------------------------------------------------------------------------
-history_df = get_master_history_data()
-
-if history_df is not None and not history_df.empty:
-    st.sidebar.success(f"自動ロード完了\n({len(history_df)}件のレコード)")
-    min_d = history_df["date"].min()
-    max_d = history_df["date"].max()
-    st.sidebar.caption(f"DB収録期間: {min_d.strftime('%Y-%m-%d')} 〜 {max_d.strftime('%Y-%m-%d')}")
-else:
-    st.sidebar.warning("過去実績DBが取得できません。手動でCSVをロードしてください。")
-    uploaded_history = st.sidebar.file_uploader("過去履歴DB-CSVを手動ロード", type=["csv"], key="history_manual")
-    if uploaded_history is not None:
-        history_df = get_manual_history_data(uploaded_history.getvalue())
-        if history_df is not None:
-            st.sidebar.success(f"手動ロード完了: {len(history_df)}件")
+history_df = pd.DataFrame()  # 黄金比DB非使用
 
 st.sidebar.markdown("---")
 global_target_date = st.sidebar.date_input("判定基準日（開催日）", date.today())
 global_target_datetime = pd.to_datetime(global_target_date)
 
 st.sidebar.markdown("### 🏟️ 競馬場・レース選択")
-selected_venue_name = st.sidebar.selectbox("競馬場", list(JRA_VENUES.keys()), key="sidebar_venue")
-selected_venue_code = JRA_VENUES[selected_venue_name]
-
 # ── 当日出馬表をDBから一括取得（全レース分） ──────────────────────────
 target_date_str = global_target_date.strftime("%Y%m%d")
+
+# 当日のCSVファイル/DBから開催場のみ抽出して選択肢に表示
+today_venues = get_today_venues(target_date_str)
+_prev_venue = st.session_state.get("_sidebar_venue_name")
+_default_idx = today_venues.index(_prev_venue) if _prev_venue in today_venues else 0
+_venue_label = f"競馬場（本日開催 {len(today_venues)}場）" if len(today_venues) < len(JRA_VENUES) else "競馬場"
+selected_venue_name = st.sidebar.selectbox(_venue_label, today_venues, index=_default_idx, key="sidebar_venue")
+st.session_state["_sidebar_venue_name"] = selected_venue_name
+selected_venue_code = JRA_VENUES[selected_venue_name]
 db_combo_key = f"{target_date_str}_{selected_venue_code}"
 
 if st.session_state.get("last_db_combo_key") != db_combo_key:
@@ -1237,17 +1280,8 @@ with st.spinner("📡 当日出馬表をDBから取得中..."):
 
 if all_entries_df.empty:
     st.sidebar.error("❌ 出馬表がDBに見つかりません。開催日・競馬場を確認してください。")
-    # フォールバック: 手動CSVアップロード
-    st.sidebar.markdown("### 📁 手動CSVアップロード（代替）")
-    col1, col2, col3 = st.columns(3)
-    with col1: st.subheader("1. 前日の結果CSV")
-    with col2: st.subheader("2. 当日の出馬表CSV")
-    with col3: st.subheader("3. 坂路調教ラップCSV（任意）")
-    prev_files = col1.file_uploader("前日の結果CSVを選択", type=["csv"], key="prev", accept_multiple_files=True)
-    curr_files = col2.file_uploader("当日の出馬表CSVを選択", type=["csv"], key="curr", accept_multiple_files=True)
-    uploaded_hanro = col3.file_uploader("坂路調教ラップCSVを選択", type=["csv"], key="hanro_upload",
-                                        help="馬名, 年月日, Time1, Lap4... の列を含むこと")
-    _use_db_entries = False
+    st.warning("⚠️ 選択した日付・競馬場のデータがDBに存在しません。サイドバーで開催日と競馬場を確認してください。")
+    st.stop()
 else:
     st.sidebar.success(f"✅ {len(all_entries_df)}頭の出走データを取得")
     race_count = all_entries_df["Ｒ"].nunique()

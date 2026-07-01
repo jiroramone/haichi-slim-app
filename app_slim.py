@@ -123,7 +123,7 @@ for _k, _v in _SESSION_DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 st.title("🏇 配置判定システム（CSV/DB両対応版）")
-st.markdown("出馬表の**配置（カラー判定・ペア・対称）**を統合したスリム版検討システムです。")
+st.markdown("出馬表の**配置（カラー判定・ペア・対称）**と、**黄金比能力指数・調教ラップ**を統合したスリム版検討システムです。")
 
 JRA_VENUES = {'札幌': '01', '函館': '02', '福島': '03', '新潟': '04', '東京': '05', '中山': '06', '中京': '07', '京都': '08', '阪神': '09', '小倉': '10'}
 
@@ -210,6 +210,9 @@ def get_master_history_data():
             df["Ｒ"]   = pd.to_numeric(df["Ｒ"], errors="coerce")
             df["馬番"] = pd.to_numeric(df["馬番"], errors="coerce")
             df["馬名"] = df["馬名"].apply(clean_horse_name)
+            # tansho_oddsは4桁整数格納(例:0030=3.0倍) → /10
+            if "オッズ" in df.columns:
+                df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
             logger.info(f"DB履歴取得: {len(df)}件")
             return df
     except Exception as e:
@@ -224,6 +227,9 @@ def get_master_history_data():
             df["馬番"] = pd.to_numeric(df.get("馬番", pd.Series()), errors="coerce")
             if "馬名" in df.columns:
                 df["馬名"] = df["馬名"].apply(clean_horse_name)
+            # tansho_oddsは4桁整数格納(例:0030=3.0倍) → /10
+            if "オッズ" in df.columns:
+                df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
             logger.info(f"CSV履歴読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -327,9 +333,13 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     for _col in ["馬番", "枠番", "Ｒ", "頭数"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce").fillna(0).astype(int)
-    for _col in ["斤量", "オッズ", "人気"]:
+    for _col in ["斤量", "人気"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce")
+    # DBのtansho_oddsは4桁ゼロ埋め整数格納(例:0030=3.0倍, 0148=14.8倍) → 常に/10
+    if "オッズ" in df.columns:
+        _o = pd.to_numeric(df["オッズ"], errors="coerce")
+        df["オッズ"] = (_o / 10.0).round(1)
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
@@ -392,7 +402,9 @@ def get_latest_odds_from_db(target_date_str: str, keibajo_code: str) -> pd.DataF
                 if c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors="coerce")
             if "odds_val" in df.columns:
-                df["odds_val"] = pd.to_numeric(df["odds_val"], errors="coerce")
+                _ov = pd.to_numeric(df["odds_val"], errors="coerce")
+                # DBと同じ4桁整数形式(例:0030=3.0倍) → 常に/10
+                df["odds_val"] = (_ov / 10.0).round(1)
             logger.info(f"CSVオッズ読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -922,11 +934,7 @@ def find_all_pair_partners_detailed(row, full_df):
                             else: 
                                 chaku_status = "<span style='color:#888;'>凡走(4着以下)</span>"
                         
-                        try:
-                            _mo = round(float(m_odds), 1)
-                            odds_txt = f"単勝 {_mo}倍" if pd.notnull(m_odds) and str(m_odds).strip() not in ["", "nan"] else "単勝 未取得"
-                        except (ValueError, TypeError):
-                            odds_txt = "単勝 未取得"
+                        odds_txt = f"単勝 {m_odds}倍" if pd.notnull(m_odds) and str(m_odds).strip() not in ["", "nan"] else "単勝 未取得"
                         pop_txt = f"{int(m_pop)}人気" if pd.notnull(m_pop) and str(m_pop).strip() not in ["", "nan"] else "未設定"
                         
                         if col_name == "騎手":
@@ -1001,12 +1009,12 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
     p_val = row_data.get('人気', None)
     try:
         o_f = float(o_val)
-        odds_txt = f"{round(o_f, 1)}倍" if o_f > 0 else "未取得"
+        odds_txt = f"{o_f}倍" if o_f > 0 else "未取得"
     except (ValueError, TypeError):
         odds_txt = "未取得"
     try:
         p_f = float(p_val)
-        pop_txt = f"{int(p_f)}人気" if p_f > 0 else "未設定"  # p_f==0は未設定扱い
+        pop_txt = f"{int(p_f)}人気" if p_f > 0 else "未設定"
     except (ValueError, TypeError):
         pop_txt = "未設定"
     
@@ -1033,7 +1041,44 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
         {owner_section_html}
     </div>"""
     
-    perf_section_html = ""
+    perf_score = row_data.get('総合指数', 0.0)
+    perf_rank = row_data.get('前走着順')
+    perf_rank_txt = f"{int(perf_rank)}着" if (pd.notnull(perf_rank) and not pd.isna(perf_rank)) else "-"
+    perf_interval = row_data.get('レース間隔', '-')
+    perf_level = row_data.get('レベル点', 0.0)
+    perf_jiri = row_data.get('自力点', 0.0)
+    perf_bonus = row_data.get('ボーナス減点', 0.0)
+    perf_hoso = row_data.get('好走/次走あり', '-')
+    perf_diff = row_data.get('前走着差', '-')
+    perf_leg = row_data.get('前走脚質', '-')
+    perf_kyuyo = row_data.get('長期休養フラグ', '-')
+    
+    kyuyo_html = ""
+    if "🚩" in str(perf_kyuyo): 
+        kyuyo_html = f"""<div style="background-color: #E8F5E9; color: #2E7D32; font-size: 11px; font-weight: bold; padding: 4px; border-radius: 4px; margin-top: 4px; border: 1px solid #A5D6A7;">{perf_kyuyo}</div>"""
+    elif perf_kyuyo != "-": 
+        kyuyo_html = f"""<div style="background-color: #F5F5F5; color: #616161; font-size: 11px; padding: 4px; border-radius: 4px; margin-top: 4px; border: 1px solid #E0E0E0;">{perf_kyuyo}</div>"""
+
+    perf_section_html = f"""
+    <div style="margin-top: 8px; margin-bottom: 8px; padding: 8px 12px; background-color: #FFFDE7; border: 1px solid #FFF59D; border-radius: 8px; {badge_opacity}">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <span style="font-weight: bold; font-size: 13px; color: #F57F17; display: flex; align-items: center; gap: 4px;"><span>⚡</span> <span>黄金比指数:</span></span>
+            <span style="font-weight: bold; font-size: 14px; color: #E65100;">{perf_score if pd.notnull(perf_score) else 0.0} 点</span>
+        </div>
+        <div style="font-size: 11.5px; color: #5D4037; display: flex; flex-wrap: wrap; row-gap: 2px; column-gap: 8px;">
+            <span>前走: <strong>{perf_rank_txt}</strong> ({perf_diff})</span>
+            <span>間隔: <strong>{perf_interval}</strong></span>
+            <span>脚質: <strong>{perf_leg}</strong></span>
+            <span>相手: <strong>{perf_level if pd.notnull(perf_level) else 0.0}点</strong></span>
+            <span>自力: <strong>{perf_jiri if pd.notnull(perf_jiri) else 0.0}点</strong></span>
+            <span>加減: <strong>{perf_bonus if pd.notnull(perf_bonus) else 0.0}点</strong></span>
+            <div style="width: 100%; border-top: 1px dashed #CCC; margin-top: 4px; padding-top: 4px; font-size: 10.5px;">
+                {perf_hoso}
+            </div>
+        </div>
+        {kyuyo_html}
+    </div>"""
+    
     hanro_html = ""
 
     badges_html_list = []
@@ -1202,7 +1247,21 @@ def render_horse_cards_carousel(h_list, selected_venue, curr_df, cards_per_row=3
 # -------------------------------------------------------------------------
 # メイン処理ブロック（DB版）
 # -------------------------------------------------------------------------
-history_df = pd.DataFrame()  # 黄金比能力DB非表示
+st.sidebar.markdown("### 🧬 黄金比能力データベース")
+history_df = get_master_history_data()
+
+if history_df is not None and not history_df.empty:
+    st.sidebar.success(f"自動ロード完了\n({len(history_df)}件のレコード)")
+    min_d = history_df["date"].min()
+    max_d = history_df["date"].max()
+    st.sidebar.caption(f"DB収録期間: {min_d.strftime('%Y-%m-%d')} 〜 {max_d.strftime('%Y-%m-%d')}")
+else:
+    st.sidebar.warning("過去実績DBが取得できません。手動でCSVをロードしてください。")
+    uploaded_history = st.sidebar.file_uploader("過去履歴DB-CSVを手動ロード", type=["csv"], key="history_manual")
+    if uploaded_history is not None:
+        history_df = get_manual_history_data(uploaded_history.getvalue())
+        if history_df is not None:
+            st.sidebar.success(f"手動ロード完了: {len(history_df)}件")
 
 st.sidebar.markdown("---")
 global_target_date = st.sidebar.date_input("判定基準日（開催日）", date.today())
@@ -1995,7 +2054,7 @@ if not curr_df.empty:
     filtered_df_venue = curr_df[curr_df['場所'] == selected_venue].copy()
     race_list = sorted(filtered_df_venue['Ｒ'].unique())
 
-    tab_list = [f"{r}R" for r in race_list] + ["🎯 予想印まとめ", "📊 本日の集計"]
+    tab_list = [f"{r}R" for r in race_list] + ["🎯 予想印まとめ", "📊 黄金比能力比較", "📊 本日の集計"]
     st.markdown("### 🔍 表示メニュー選択")
     
     # 【改修】key='current_tab' で session_state と直結 → 1回の選択で即座に反映
@@ -2142,6 +2201,50 @@ if not curr_df.empty:
                 
         if not has_any:
             st.info("💡 まだ印（◎○▲△☆）をつけた馬がいません。各レースから馬を選択してください。")
+
+    elif selected_tab == "📊 黄金比能力比較":
+        st.markdown(f"### 📊 黄金比バランス指数・調教比較 ({selected_venue})")
+        st.markdown("前走の相手関係、タイム差（着差）、脚質データ、ローテーション、長期休養フラグに加え、坂路調教の4Fタイムおよび終いラップ評価の一覧です。")
+        
+        perf_display_df = filtered_df_venue.copy()
+        if '総合指数' in perf_display_df.columns:
+            perf_display_df = perf_display_df.sort_values(by=['Ｒ', '総合指数'], ascending=[True, False]).reset_index(drop=True)
+            
+            def highlight_perf_only(row):
+                styles = [''] * len(row)
+                cols = list(row.index)
+                if '総合指数' in cols:
+                    idx_idx = cols.index('総合指数')
+                    try:
+                        val_f = float(row['総合指数'])
+                        if val_f >= 100.0: styles[idx_idx] = 'background-color: #ffcccc; color: red; font-weight: bold;'
+                        elif val_f >= 80.0: styles[idx_idx] = 'background-color: #fff2cc; font-weight: bold;'
+                    except: pass
+                
+                return styles
+                
+            perf_cols = ['Ｒ', '馬番', '馬名', '総合指数', '長期休養フラグ', 'ラップ評価', '4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F', 'レベル点', '自力点', 'ボーナス減点', '前走着順', '前走着差', '前走脚質', 'レース間隔', '好走/次走あり', '前走日付']
+            perf_cols_exist = [c for c in perf_cols if c in perf_display_df.columns]
+            
+            col_config_integrated = {
+                "Ｒ": st.column_config.NumberColumn("レース", format="%d R"), 
+                "馬番": st.column_config.NumberColumn("馬番", format="%d"),
+                "総合指数": st.column_config.NumberColumn("★ 総合指数", format="%.1f"), 
+                "レベル点": st.column_config.NumberColumn("相手レベル点", format="%.1f 点"),
+                "自力点": st.column_config.NumberColumn("自力点", format="%.1f 点"), 
+                "ボーナス減点": st.column_config.NumberColumn("加減点", format="%.1f 点"),
+                "4Fタイム": st.column_config.NumberColumn("坂路4F", format="%.1f")
+            }
+            
+            st.dataframe(
+                perf_display_df[perf_cols_exist].style.apply(highlight_perf_only, axis=1), 
+                column_config=col_config_integrated, 
+                use_container_width=True, 
+                hide_index=True, 
+                height=600
+            )
+        else:
+            st.warning("能力比較データベースが読み込まれていないか、有効な指数データがありません。")
 
     elif selected_tab == "📊 本日の集計":
         st.markdown(f"### 📈 本日の成績集計 ({selected_venue})")

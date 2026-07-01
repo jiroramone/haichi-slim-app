@@ -123,7 +123,7 @@ for _k, _v in _SESSION_DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 st.title("🏇 配置判定システム（CSV/DB両対応版）")
-st.markdown("出馬表の**配置（カラー判定・ペア・対称）**と**調教ラップ**を統合した検討システムです。")
+st.markdown("出馬表の**配置（カラー判定・ペア・対称）**と、**黄金比能力指数・調教ラップ**を統合したスリム版検討システムです。")
 
 JRA_VENUES = {'札幌': '01', '函館': '02', '福島': '03', '新潟': '04', '東京': '05', '中山': '06', '中京': '07', '京都': '08', '阪神': '09', '小倉': '10'}
 
@@ -263,7 +263,7 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     CSVファイル名: data/entries_YYYYMMDD_VV.csv
     """
     import os
-    csv_path = os.path.join("data", f"entries_{target_date_str}.csv")
+    csv_path = os.path.join("data", f"entries_{target_date_str}_{keibajo_code}.csv")
     db_ok = False
 
     try:
@@ -304,16 +304,12 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
         logger.warning(f"DB接続失敗 → CSVフォールバック: {e}")
         df = pd.DataFrame()
 
-    # CSVフォールバック（1日1ファイル形式・場コードでフィルタ）
+    # CSVフォールバック
     if not db_ok:
         if os.path.exists(csv_path):
             try:
-                df_all = pd.read_csv(csv_path, dtype=str)
-                if "場コード" in df_all.columns:
-                    df = df_all[df_all["場コード"] == keibajo_code].copy()
-                else:
-                    df = df_all.copy()
-                logger.info(f"CSV読み込み: {csv_path} 場コード={keibajo_code} ({len(df)}行)")
+                df = pd.read_csv(csv_path, dtype=str)
+                logger.info(f"CSV読み込み: {csv_path} ({len(df)}行)")
             except Exception as e:
                 logger.error(f"CSV読み込みエラー: {e}")
                 return pd.DataFrame()
@@ -334,6 +330,11 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     for _col in ["斤量", "オッズ", "人気"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce")
+    # DBのtansho_oddsは整数格納(例:24=2.4倍) → /10して実際の倍率に変換
+    # CSVから読んだ場合も同様(10より大きい値のみ除算してCSV実数値の二重変換を防ぐ)
+    if "オッズ" in df.columns:
+        _o = df["オッズ"]
+        df["オッズ"] = _o.where(_o <= 10.0, _o / 10.0)
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
@@ -397,6 +398,9 @@ def get_latest_odds_from_db(target_date_str: str, keibajo_code: str) -> pd.DataF
                     df[c] = pd.to_numeric(df[c], errors="coerce")
             if "odds_val" in df.columns:
                 df["odds_val"] = pd.to_numeric(df["odds_val"], errors="coerce")
+                # CSVがDB整数形式(例:24=2.4倍)で保存されている場合 /10
+                _ov = df["odds_val"]
+                df["odds_val"] = _ov.where(_ov <= 10.0, _ov / 10.0)
             logger.info(f"CSVオッズ読み込み: {csv_path} ({len(df)}行)")
             return df
         except Exception as e:
@@ -1033,7 +1037,43 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
         {owner_section_html}
     </div>"""
     
-    perf_section_html = ""  # 黄金比指数欄を削除
+    perf_score = row_data.get('総合指数', 0.0)
+    perf_rank = row_data.get('前走着順')
+    perf_rank_txt = f"{int(perf_rank)}着" if (pd.notnull(perf_rank) and not pd.isna(perf_rank)) else "-"
+    perf_interval = row_data.get('レース間隔', '-')
+    perf_level = row_data.get('レベル点', 0.0)
+    perf_jiri = row_data.get('自力点', 0.0)
+    perf_bonus = row_data.get('ボーナス減点', 0.0)
+    perf_hoso = row_data.get('好走/次走あり', '-')
+    perf_diff = row_data.get('前走着差', '-')
+    perf_leg = row_data.get('前走脚質', '-')
+    perf_kyuyo = row_data.get('長期休養フラグ', '-')
+    
+    kyuyo_html = ""
+    if "🚩" in str(perf_kyuyo): 
+        kyuyo_html = f"""<div style="background-color: #E8F5E9; color: #2E7D32; font-size: 11px; font-weight: bold; padding: 4px; border-radius: 4px; margin-top: 4px; border: 1px solid #A5D6A7;">{perf_kyuyo}</div>"""
+    elif perf_kyuyo != "-": 
+        kyuyo_html = f"""<div style="background-color: #F5F5F5; color: #616161; font-size: 11px; padding: 4px; border-radius: 4px; margin-top: 4px; border: 1px solid #E0E0E0;">{perf_kyuyo}</div>"""
+
+    perf_section_html = f"""
+    <div style="margin-top: 8px; margin-bottom: 8px; padding: 8px 12px; background-color: #FFFDE7; border: 1px solid #FFF59D; border-radius: 8px; {badge_opacity}">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <span style="font-weight: bold; font-size: 13px; color: #F57F17; display: flex; align-items: center; gap: 4px;"><span>⚡</span> <span>黄金比指数:</span></span>
+            <span style="font-weight: bold; font-size: 14px; color: #E65100;">{perf_score if pd.notnull(perf_score) else 0.0} 点</span>
+        </div>
+        <div style="font-size: 11.5px; color: #5D4037; display: flex; flex-wrap: wrap; row-gap: 2px; column-gap: 8px;">
+            <span>前走: <strong>{perf_rank_txt}</strong> ({perf_diff})</span>
+            <span>間隔: <strong>{perf_interval}</strong></span>
+            <span>脚質: <strong>{perf_leg}</strong></span>
+            <span>相手: <strong>{perf_level if pd.notnull(perf_level) else 0.0}点</strong></span>
+            <span>自力: <strong>{perf_jiri if pd.notnull(perf_jiri) else 0.0}点</strong></span>
+            <span>加減: <strong>{perf_bonus if pd.notnull(perf_bonus) else 0.0}点</strong></span>
+            <div style="width: 100%; border-top: 1px dashed #CCC; margin-top: 4px; padding-top: 4px; font-size: 10.5px;">
+                {perf_hoso}
+            </div>
+        </div>
+        {kyuyo_html}
+    </div>"""
     
     hanro_html = ""
 
@@ -1203,6 +1243,7 @@ def render_horse_cards_carousel(h_list, selected_venue, curr_df, cards_per_row=3
 # -------------------------------------------------------------------------
 # メイン処理ブロック（DB版）
 # -------------------------------------------------------------------------
+st.sidebar.markdown("### 🧬 黄金比能力データベース")
 history_df = get_master_history_data()
 
 if history_df is not None and not history_df.empty:
@@ -1212,31 +1253,18 @@ if history_df is not None and not history_df.empty:
     st.sidebar.caption(f"DB収録期間: {min_d.strftime('%Y-%m-%d')} 〜 {max_d.strftime('%Y-%m-%d')}")
 else:
     st.sidebar.warning("過去実績DBが取得できません。手動でCSVをロードしてください。")
-
+    uploaded_history = st.sidebar.file_uploader("過去履歴DB-CSVを手動ロード", type=["csv"], key="history_manual")
+    if uploaded_history is not None:
+        history_df = get_manual_history_data(uploaded_history.getvalue())
+        if history_df is not None:
+            st.sidebar.success(f"手動ロード完了: {len(history_df)}件")
 
 st.sidebar.markdown("---")
 global_target_date = st.sidebar.date_input("判定基準日（開催日）", date.today())
 global_target_datetime = pd.to_datetime(global_target_date)
 
 st.sidebar.markdown("### 🏟️ 競馬場・レース選択")
-
-# 選択日のCSVに存在する競馬場だけを選択肢に表示
-_target_date_str_for_venues = global_target_date.strftime("%Y%m%d")
-_csv_path_for_venues = os.path.join("data", f"entries_{_target_date_str_for_venues}.csv")
-_available_venues = list(JRA_VENUES.keys())  # デフォルト: 全場
-try:
-    if os.path.exists(_csv_path_for_venues):
-        _venue_df = pd.read_csv(_csv_path_for_venues, dtype=str, usecols=lambda c: c in ["場コード", "場所"])
-        _code_to_venue = {v: k for k, v in JRA_VENUES.items()}
-        if "場コード" in _venue_df.columns:
-            _found_codes = _venue_df["場コード"].dropna().unique().tolist()
-            _found_names = [_code_to_venue[c] for c in _found_codes if c in _code_to_venue]
-            if _found_names:
-                _available_venues = sorted(_found_names, key=lambda x: list(JRA_VENUES.keys()).index(x))
-except Exception:
-    pass  # 読み込み失敗時は全場表示
-
-selected_venue_name = st.sidebar.selectbox("競馬場", _available_venues, key="sidebar_venue")
+selected_venue_name = st.sidebar.selectbox("競馬場", list(JRA_VENUES.keys()), key="sidebar_venue")
 selected_venue_code = JRA_VENUES[selected_venue_name]
 
 # ── 当日出馬表をDBから一括取得（全レース分） ──────────────────────────
@@ -1255,10 +1283,16 @@ with st.spinner("📡 当日出馬表をDBから取得中..."):
 
 if all_entries_df.empty:
     st.sidebar.error("❌ 出馬表がDBに見つかりません。開催日・競馬場を確認してください。")
-    # CSVアップロードUI削除済み（DB/自動CSV対応）
-    prev_files = []
-    curr_files = None
-    uploaded_hanro = None
+    # フォールバック: 手動CSVアップロード
+    st.sidebar.markdown("### 📁 手動CSVアップロード（代替）")
+    col1, col2, col3 = st.columns(3)
+    with col1: st.subheader("1. 前日の結果CSV")
+    with col2: st.subheader("2. 当日の出馬表CSV")
+    with col3: st.subheader("3. 坂路調教ラップCSV（任意）")
+    prev_files = col1.file_uploader("前日の結果CSVを選択", type=["csv"], key="prev", accept_multiple_files=True)
+    curr_files = col2.file_uploader("当日の出馬表CSVを選択", type=["csv"], key="curr", accept_multiple_files=True)
+    uploaded_hanro = col3.file_uploader("坂路調教ラップCSVを選択", type=["csv"], key="hanro_upload",
+                                        help="馬名, 年月日, Time1, Lap4... の列を含むこと")
     _use_db_entries = False
 else:
     st.sidebar.success(f"✅ {len(all_entries_df)}頭の出走データを取得")
@@ -2016,7 +2050,7 @@ if not curr_df.empty:
     filtered_df_venue = curr_df[curr_df['場所'] == selected_venue].copy()
     race_list = sorted(filtered_df_venue['Ｒ'].unique())
 
-    tab_list = [f"{r}R" for r in race_list] + ["🎯 予想印まとめ", "📊 本日の集計"]
+    tab_list = [f"{r}R" for r in race_list] + ["🎯 予想印まとめ", "📊 黄金比能力比較", "📊 本日の集計"]
     st.markdown("### 🔍 表示メニュー選択")
     
     # 【改修】key='current_tab' で session_state と直結 → 1回の選択で即座に反映
@@ -2164,6 +2198,50 @@ if not curr_df.empty:
         if not has_any:
             st.info("💡 まだ印（◎○▲△☆）をつけた馬がいません。各レースから馬を選択してください。")
 
+    elif selected_tab == "📊 黄金比能力比較":
+        st.markdown(f"### 📊 黄金比バランス指数・調教比較 ({selected_venue})")
+        st.markdown("前走の相手関係、タイム差（着差）、脚質データ、ローテーション、長期休養フラグに加え、坂路調教の4Fタイムおよび終いラップ評価の一覧です。")
+        
+        perf_display_df = filtered_df_venue.copy()
+        if '総合指数' in perf_display_df.columns:
+            perf_display_df = perf_display_df.sort_values(by=['Ｒ', '総合指数'], ascending=[True, False]).reset_index(drop=True)
+            
+            def highlight_perf_only(row):
+                styles = [''] * len(row)
+                cols = list(row.index)
+                if '総合指数' in cols:
+                    idx_idx = cols.index('総合指数')
+                    try:
+                        val_f = float(row['総合指数'])
+                        if val_f >= 100.0: styles[idx_idx] = 'background-color: #ffcccc; color: red; font-weight: bold;'
+                        elif val_f >= 80.0: styles[idx_idx] = 'background-color: #fff2cc; font-weight: bold;'
+                    except: pass
+                
+                return styles
+                
+            perf_cols = ['Ｒ', '馬番', '馬名', '総合指数', '長期休養フラグ', 'ラップ評価', '4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F', 'レベル点', '自力点', 'ボーナス減点', '前走着順', '前走着差', '前走脚質', 'レース間隔', '好走/次走あり', '前走日付']
+            perf_cols_exist = [c for c in perf_cols if c in perf_display_df.columns]
+            
+            col_config_integrated = {
+                "Ｒ": st.column_config.NumberColumn("レース", format="%d R"), 
+                "馬番": st.column_config.NumberColumn("馬番", format="%d"),
+                "総合指数": st.column_config.NumberColumn("★ 総合指数", format="%.1f"), 
+                "レベル点": st.column_config.NumberColumn("相手レベル点", format="%.1f 点"),
+                "自力点": st.column_config.NumberColumn("自力点", format="%.1f 点"), 
+                "ボーナス減点": st.column_config.NumberColumn("加減点", format="%.1f 点"),
+                "4Fタイム": st.column_config.NumberColumn("坂路4F", format="%.1f")
+            }
+            
+            st.dataframe(
+                perf_display_df[perf_cols_exist].style.apply(highlight_perf_only, axis=1), 
+                column_config=col_config_integrated, 
+                use_container_width=True, 
+                hide_index=True, 
+                height=600
+            )
+        else:
+            st.warning("能力比較データベースが読み込まれていないか、有効な指数データがありません。")
+
     elif selected_tab == "📊 本日の集計":
         st.markdown(f"### 📈 本日の成績集計 ({selected_venue})")
         st.markdown("※着順が入力されたレースのみ集計されます。")
@@ -2250,3 +2328,55 @@ if not curr_df.empty:
     * <span style="background-color: #E3F2FD; padding: 2px 5px; color: black;">🟦 青塗隣馬</span> : 青塗馬の隣の隣。
     """, unsafe_allow_html=True)
 
+    # -------------------------------------------------------------------------
+    # 翌日用CSVのダウンロード機能
+    # -------------------------------------------------------------------------
+    st.write("---")
+    st.subheader("💾 翌日用結果CSVの保存")
+    st.markdown("""
+    各レースの「1着の馬番」「2着の馬番」「3着の馬番」に入力した結果をファイルに保存し、翌日の「前日の結果CSV」としてそのまま使用できます。
+    ※当日の**全競馬場・全レース**に入力した着順が1つにまとめて反映されます（1〜3着以外は10として出力されます）。
+    """)
+
+    save_df = curr_df.copy()
+    save_df['着順'] = ""
+
+    save_df['_save_umaban_int'] = pd.to_numeric(save_df['馬番'], errors='coerce').fillna(-999).astype(int)
+    save_df['_save_r_int'] = pd.to_numeric(save_df['Ｒ'], errors='coerce').fillna(-999).astype(int)
+
+    for v in save_df['場所'].unique():
+        r_list_int = sorted(save_df[save_df['場所'] == v]['_save_r_int'].unique())
+        
+        for r_int in r_list_int:
+            if r_int == -999: 
+                continue
+                
+            c1_val = st.session_state['saved_chaku'].get(f"c1_{v}_{r_int}")
+            c2_val = st.session_state['saved_chaku'].get(f"c2_{v}_{r_int}")
+            c3_val = st.session_state['saved_chaku'].get(f"c3_{v}_{r_int}")
+            
+            if (c1_val is not None) or (c2_val is not None) or (c3_val is not None):
+                mask_race = (save_df['場所'] == v) & (save_df['_save_r_int'] == r_int)
+                save_df.loc[mask_race, '着順'] = "10"
+                
+                if c1_val is not None: 
+                    save_df.loc[mask_race & (save_df['_save_umaban_int'] == int(c1_val)), '着順'] = "1"
+                if c2_val is not None: 
+                    save_df.loc[mask_race & (save_df['_save_umaban_int'] == int(c2_val)), '着順'] = "2"
+                if c3_val is not None: 
+                    save_df.loc[mask_race & (save_df['_save_umaban_int'] == int(c3_val)), '着順'] = "3"
+
+    save_df = save_df.drop(columns=['_save_umaban_int', '_save_r_int'])
+    base_cols = ['日付S', '場所', 'Ｒ', '馬番', '馬名', '騎手', '調教師', '馬主(最新/仮想)', 'オッズ', '人気', '着順']
+    save_cols = [c for c in base_cols if c in save_df.columns]
+    
+    csv_data = save_df[save_cols].to_csv(index=False).encode('utf-8-sig')
+    
+    file_prefix = curr_df['日付S'].iloc[0] if not curr_df.empty else 'output'
+    st.download_button(
+        label="🏆 着順入力を反映したCSVをダウンロード",
+        data=csv_data,
+        file_name=f"result_with_chaku_{file_prefix}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )

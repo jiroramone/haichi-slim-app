@@ -329,7 +329,7 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
             df[_col] = pd.to_numeric(df[_col], errors="coerce").fillna(0).astype(int)
     for _col in ["斤量", "オッズ", "人気"]:
         if _col in df.columns:
-            df[_col] = pd.to_numeric(df[_col], errors="coerce")
+            df[_col] = pd.to_numeric(df[_col], errors="coerce") /10.0
     # DBのtansho_oddsは整数格納(例:24=2.4倍) → /10して実際の倍率に変換
     # CSVから読んだ場合も同様(10より大きい値のみ除算してCSV実数値の二重変換を防ぐ)
     if "オッズ" in df.columns:

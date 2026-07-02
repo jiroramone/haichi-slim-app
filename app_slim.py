@@ -301,18 +301,67 @@ def get_today_venues(target_date_str: str) -> list:
 @st.cache_data(ttl=300)
 def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFrame:
     """
-    出走馬一覧取得: DB優先、失敗時はCSVフォールバック
+    出走馬一覧取得:
+    - 基本情報は DB優先、失敗時はCSVフォールバック
+    - オッズは CSV優先で保持
+    - DBオッズは別列で保持し、後続の同期で上書きできるようにする
     CSVファイル名: data/entries_YYYYMMDD_VV.csv
     """
     import os
+
     csv_candidates = [
         os.path.join("data", f"entries_{target_date_str}_{keibajo_code}.csv"),
         os.path.join("data", f"entries_{target_date_str}.csv"),
     ]
-    db_ok = False
 
+    def _normalize_entry_df(_df: pd.DataFrame, _target_date_str: str) -> pd.DataFrame:
+        if _df.empty:
+            return _df
+
+        code_to_venue = {v: k for k, v in JRA_VENUES.items()}
+
+        if "場コード" in _df.columns:
+            _df["場所"] = _df["場コード"].map(code_to_venue).fillna(_df.get("場所", ""))
+        elif "場所" not in _df.columns:
+            _df["場所"] = ""
+
+        _df["日付S"] = _target_date_str
+
+        if "馬名" in _df.columns:
+            _df["馬名"] = _df["馬名"].apply(clean_horse_name)
+
+        for _col in ["馬番", "枠番", "Ｒ", "頭数"]:
+            if _col in _df.columns:
+                _df[_col] = pd.to_numeric(_df[_col], errors="coerce").fillna(0).astype(int)
+
+        for _col in ["斤量", "人気"]:
+            if _col in _df.columns:
+                _df[_col] = pd.to_numeric(_df[_col], errors="coerce")
+
+        if "オッズ" in _df.columns:
+            _ov = pd.to_numeric(_df["オッズ"], errors="coerce")
+            _df["オッズ"] = (_ov / 10.0).round(1)
+        else:
+            _df["オッズ"] = np.nan
+
+        return _df
+
+    csv_df = pd.DataFrame()
+    csv_path = next((p for p in csv_candidates if os.path.exists(p)), None)
+    if csv_path:
+        try:
+            csv_df = pd.read_csv(csv_path, dtype=str)
+            logger.info(f"CSV読み込み: {csv_path} ({len(csv_df)}行)")
+            csv_df = _normalize_entry_df(csv_df, target_date_str)
+        except Exception as e:
+            logger.error(f"CSV読み込みエラー: {e}")
+            csv_df = pd.DataFrame()
+    else:
+        logger.warning(f"CSVなし: {csv_candidates}")
+
+    db_df = pd.DataFrame()
     try:
-        nen   = target_date_str[:4]
+        nen = target_date_str[:4]
         gappi = target_date_str[4:]
         query = """
             SELECT
@@ -342,45 +391,50 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
               AND r.keibajo_code = %(venue)s
             ORDER BY r.race_bango::int, u.umaban::int
         """
-        df = run_query(query, params={"nen": nen, "gappi": gappi, "venue": keibajo_code})
-        if not df.empty:
-            db_ok = True
+        db_df = run_query(query, params={"nen": nen, "gappi": gappi, "venue": keibajo_code})
+        if not db_df.empty:
+            db_df = _normalize_entry_df(db_df, target_date_str)
+            logger.info(f"DB出馬表取得: {len(db_df)}件")
     except Exception as e:
-        logger.warning(f"DB接続失敗 → CSVフォールバック: {e}")
-        df = pd.DataFrame()
+        logger.warning(f"DB接続失敗 → CSV使用: {e}")
+        db_df = pd.DataFrame()
 
-    # CSVフォールバック
-    if not db_ok:
-        csv_path = next((p for p in csv_candidates if os.path.exists(p)), None)
-        if csv_path:
-            try:
-                df = pd.read_csv(csv_path, dtype=str)
-                logger.info(f"CSV読み込み: {csv_path} ({len(df)}行)")
-            except Exception as e:
-                logger.error(f"CSV読み込みエラー: {e}")
-                return pd.DataFrame()
-        else:
-            logger.warning(f"CSVなし: {csv_candidates}")
-            return pd.DataFrame()
+    if not db_df.empty:
+        df = db_df.copy()
+    elif not csv_df.empty:
+        df = csv_df.copy()
+    else:
+        return pd.DataFrame()
 
-    if df.empty:
-        return df
+    if not csv_df.empty and {"Ｒ", "馬番", "オッズ"}.issubset(csv_df.columns):
+        csv_odds_map = (
+            csv_df[["Ｒ", "馬番", "オッズ", "人気"]]
+            .rename(columns={"オッズ": "CSVオッズ", "人気": "CSV人気"})
+            .drop_duplicates(subset=["Ｒ", "馬番"])
+        )
+        df = df.merge(csv_odds_map, on=["Ｒ", "馬番"], how="left")
+    else:
+        df["CSVオッズ"] = np.nan
+        df["CSV人気"] = np.nan
 
-    CODE_TO_VENUE = {v: k for k, v in JRA_VENUES.items()}
-    df["場所"] = df["場コード"].map(CODE_TO_VENUE).fillna(df.get("場コード", df.get("場所", "")))
-    df["日付S"] = target_date_str
-    df["馬名"]  = df["馬名"].apply(clean_horse_name)
-    for _col in ["馬番", "枠番", "Ｒ", "頭数"]:
-        if _col in df.columns:
-            df[_col] = pd.to_numeric(df[_col], errors="coerce").fillna(0).astype(int)
-    for _col in ["斤量", "人気"]:
-        if _col in df.columns:
-            df[_col] = pd.to_numeric(df[_col], errors="coerce")
-    # tansho_odds は4桁整数格納 (例: "0074" → 74 → 7.4倍)
-    # DB・CSV問わず常に /10 で換算
     if "オッズ" in df.columns:
-        _ov = pd.to_numeric(df["オッズ"], errors="coerce")
-        df["オッズ"] = (_ov / 10.0).round(1)
+        df["DBオッズ"] = df["オッズ"]
+    else:
+        df["DBオッズ"] = np.nan
+
+    if "人気" in df.columns:
+        df["DB人気"] = df["人気"]
+    else:
+        df["DB人気"] = np.nan
+
+    df["オッズ"] = df["CSVオッズ"].combine_first(df["DBオッズ"])
+    df["人気"] = df["CSV人気"].combine_first(df["DB人気"])
+
+    df["オッズ取得元"] = np.where(
+        df["CSVオッズ"].notna(), "CSV",
+        np.where(df["DBオッズ"].notna(), "DB", "未取得")
+    )
+
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
@@ -1599,6 +1653,11 @@ if _use_db_entries:
                 return 0.0
 
         df['オッズ'] = df['オッズ'].apply(lambda x: safe_float(x) if safe_float(x) > 0 else float('nan'))
+        for col in ["CSVオッズ", "DBオッズ", "CSV人気", "DB人気", "オッズ取得元"]:
+            if col not in df.columns:
+                df[col] = np.nan
+        df['オッズ'] = pd.to_numeric(df['オッズ'], errors='coerce')
+        df['人気'] = pd.to_numeric(df['人気'], errors='coerce')
         df['temp_odds'] = df['オッズ'].fillna(0.0)
 
         for idx, row in df.iterrows():
@@ -1976,24 +2035,39 @@ if not curr_df.empty:
                         st.sidebar.error(f"❌ DBエラー: {_e}")
                         odds_df = pd.DataFrame()
                 if not odds_df.empty:
+                    fpdf = st.session_state["fully_processed_df"]
+                    for col in ["DBオッズ", "DB人気", "CSVオッズ", "CSV人気", "オッズ取得元"]:
+                        if col not in fpdf.columns:
+                            fpdf[col] = np.nan
+
                     for _, o_row in odds_df.iterrows():
                         mask = (
-                            (st.session_state["fully_processed_df"]["日付S"] == target_date_str) &
-                            (st.session_state["fully_processed_df"]["Ｒ"].astype(int) == int(o_row["race_num"])) &
-                            (st.session_state["fully_processed_df"]["馬番"].astype(int) == int(o_row["umaban"]))
+                            (fpdf["日付S"] == target_date_str) &
+                            (fpdf["Ｒ"].astype(int) == int(o_row["race_num"])) &
+                            (fpdf["馬番"].astype(int) == int(o_row["umaban"]))
                         )
                         try:
                             odds_val = round(float(str(o_row["odds_val"]).strip()), 1)
                         except (ValueError, TypeError):
                             odds_val = float('nan')
-                        st.session_state["fully_processed_df"].loc[mask, "オッズ"] = odds_val
+                        if pd.notna(odds_val):
+                            fpdf.loc[mask, "DBオッズ"] = odds_val
+
                         try:
                             ninki_val = int(float(str(o_row["ninki_val"]).strip()))
                         except (ValueError, TypeError):
                             ninki_val = pd.NA
-                        st.session_state["fully_processed_df"].loc[mask, "人気"] = ninki_val
-                    st.session_state["fully_processed_df"]["temp_odds"] = (
-                        st.session_state["fully_processed_df"]["オッズ"].fillna(999.0))
+                        if pd.notna(ninki_val):
+                            fpdf.loc[mask, "DB人気"] = ninki_val
+
+                    fpdf["オッズ"] = fpdf["DBオッズ"].combine_first(fpdf["CSVオッズ"])
+                    fpdf["人気"] = fpdf["DB人気"].combine_first(fpdf["CSV人気"])
+                    fpdf["オッズ取得元"] = np.where(
+                        fpdf["DBオッズ"].notna(), "DB",
+                        np.where(fpdf["CSVオッズ"].notna(), "CSV", "未取得")
+                    )
+                    fpdf["temp_odds"] = pd.to_numeric(fpdf["オッズ"], errors="coerce").fillna(999.0)
+                    st.session_state["fully_processed_df"] = fpdf
                     st.sidebar.success("✅ DBオッズ同期完了（表示に反映されました）")
                 else:
                     st.sidebar.warning("⚠️ DBにオッズデータが見つかりません")

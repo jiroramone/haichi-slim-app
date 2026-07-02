@@ -1266,12 +1266,20 @@ target_date_str = global_target_date.strftime("%Y%m%d")
 
 # 当日のCSVファイル/DBから開催場のみ抽出して選択肢に表示
 today_venues = get_today_venues(target_date_str)
-_prev_venue = st.session_state.get("_sidebar_venue_name")
-_default_idx = today_venues.index(_prev_venue) if _prev_venue in today_venues else 0
-_venue_label = f"競馬場（本日開催 {len(today_venues)}場）" if len(today_venues) < len(JRA_VENUES) else "競馬場"
-selected_venue_name = st.sidebar.selectbox(_venue_label, today_venues, index=_default_idx, key="sidebar_venue")
-st.session_state["_sidebar_venue_name"] = selected_venue_name
-selected_venue_code = JRA_VENUES[selected_venue_name]
+if not today_venues:
+    st.sidebar.warning("当日の出馬表開催場が見つかりません。CSVまたはDBを確認してください。")
+    st.warning("当日の出馬表開催場が見つからないため、表示を続行できません。")
+    st.stop()
+
+prev_venue = st.session_state.get("sidebar_venue_name")
+default_idx = today_venues.index(prev_venue) if prev_venue in today_venues else 0
+venue_label = f"開催場（{len(today_venues)}場）"
+selected_venue_name = st.sidebar.selectbox(venue_label, today_venues, index=default_idx, key="sidebar_venue")
+st.session_state["sidebar_venue_name"] = selected_venue_name
+selected_venue_code = JRA_VENUES.get(selected_venue_name)
+if selected_venue_code is None:
+    st.sidebar.error(f"会場コードを特定できません: {selected_venue_name}")
+    st.stop()
 db_combo_key = f"{target_date_str}_{selected_venue_code}"
 
 if st.session_state.get("last_db_combo_key") != db_combo_key:

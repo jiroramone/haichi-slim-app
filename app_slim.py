@@ -376,10 +376,11 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     for _col in ["斤量", "人気"]:
         if _col in df.columns:
             df[_col] = pd.to_numeric(df[_col], errors="coerce")
-    # DBのtansho_oddsは4桁整数格納(例:0030=3.0倍) → 常に/10
+    # tansho_odds は4桁整数格納 (例: "0074" → 74 → 7.4倍)
+    # DB・CSV問わず常に /10 で換算
     if "オッズ" in df.columns:
         _ov = pd.to_numeric(df["オッズ"], errors="coerce")
-        df["オッズ"] = np.where(_ov > 100, (_ov / 10.0), _ov).round(1)
+        df["オッズ"] = (_ov / 10.0).round(1)
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
@@ -1052,7 +1053,7 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
     p_val = row_data.get('人気', None)
     try:
         o_f = float(o_val)
-        odds_txt = f"{round(o_f, 1)}倍" if o_f > 0 else "未取得"
+        odds_txt = f"{round(o_f, 1)}倍" if pd.notna(o_f) and o_f >= 0 else "未取得"
     except (ValueError, TypeError):
         odds_txt = "未取得"
     try:

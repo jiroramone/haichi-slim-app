@@ -305,7 +305,10 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     CSVファイル名: data/entries_YYYYMMDD_VV.csv
     """
     import os
-    csv_path = os.path.join("data", f"entries_{target_date_str}_{keibajo_code}.csv")
+    csv_candidates = [
+        os.path.join("data", f"entries_{target_date_str}_{keibajo_code}.csv"),
+        os.path.join("data", f"entries_{target_date_str}.csv"),
+    ]
     db_ok = False
 
     try:
@@ -348,7 +351,8 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
 
     # CSVフォールバック
     if not db_ok:
-        if os.path.exists(csv_path):
+        csv_path = next((p for p in csv_candidates if os.path.exists(p)), None)
+        if csv_path:
             try:
                 df = pd.read_csv(csv_path, dtype=str)
                 logger.info(f"CSV読み込み: {csv_path} ({len(df)}行)")
@@ -356,7 +360,7 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
                 logger.error(f"CSV読み込みエラー: {e}")
                 return pd.DataFrame()
         else:
-            logger.warning(f"CSVなし: {csv_path}")
+            logger.warning(f"CSVなし: {csv_candidates}")
             return pd.DataFrame()
 
     if df.empty:
@@ -374,7 +378,8 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
             df[_col] = pd.to_numeric(df[_col], errors="coerce")
     # DBのtansho_oddsは4桁整数格納(例:0030=3.0倍) → 常に/10
     if "オッズ" in df.columns:
-        df["オッズ"] = (pd.to_numeric(df["オッズ"], errors="coerce") / 10.0).round(1)
+        _ov = pd.to_numeric(df["オッズ"], errors="coerce")
+        df["オッズ"] = np.where(_ov > 100, (_ov / 10.0), _ov).round(1)
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:

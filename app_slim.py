@@ -1053,7 +1053,7 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
     p_val = row_data.get('人気', None)
     try:
         o_f = float(o_val)
-        odds_txt = f"{round(o_f, 1)}倍" if pd.notna(o_f) and o_f >= 0 else "未取得"
+        odds_txt = f"{round(o_f, 1)}倍" if pd.notna(o_f) else "未取得"
     except (ValueError, TypeError):
         odds_txt = "未取得"
     try:

@@ -262,15 +262,12 @@ def get_manual_history_data(file_bytes_content):
 # ============================================================
 @st.cache_data(ttl=60)
 def get_today_venues(target_date_str: str) -> list:
-    """当日開催場をCSVファイル名 → DB の順で取得。失敗時は全場返す。
-    CSVファイル名: data/entries_YYYYMMDD_VV.csv のVVから競馬場コードを判定
-    """
+    """当日開催場をCSVファイル名 → CSV内容 → DBの順で取得。失敗時は空配列を返す。"""
     import glob
     CODE_TO_VENUE = {v: k for k, v in JRA_VENUES.items()}
-
-    # ① data/entries_YYYYMMDD_VV.csv のファイル名から判定（最速）
-    csv_files = glob.glob(os.path.join("data", f"entries_{target_date_str}_*.csv"))
+    csv_files = glob.glob(os.path.join("data", f"entries_{target_date_str}*.csv"))
     venues = []
+
     for cf in sorted(csv_files):
         fname = os.path.basename(cf)
         parts = fname.replace(".csv", "").split("_")
@@ -279,23 +276,45 @@ def get_today_venues(target_date_str: str) -> list:
             v = CODE_TO_VENUE.get(code)
             if v and v not in venues:
                 venues.append(v)
+
     if venues:
         return venues
 
-    # ② DBから取得
+    for cf in sorted(csv_files):
+        try:
+            try:
+                df = pd.read_csv(cf, dtype=str, encoding="utf-8-sig")
+            except UnicodeDecodeError:
+                df = pd.read_csv(cf, dtype=str, encoding="cp932")
+            if "場所" in df.columns:
+                for v in df["場所"].dropna().astype(str).str.strip().unique():
+                    if v in JRA_VENUES and v not in venues:
+                        venues.append(v)
+            if "場コード" in df.columns:
+                for c in df["場コード"].dropna().astype(str).str.strip().str.zfill(2).unique():
+                    v = CODE_TO_VENUE.get(c)
+                    if v and v not in venues:
+                        venues.append(v)
+        except Exception as e:
+            logger.warning(f"CSV当日開催場取得失敗: {e}")
+
+    if venues:
+        return venues
+
     try:
         nen, gappi = target_date_str[:4], target_date_str[4:]
-        q = ("SELECT DISTINCT r.keibajo_code FROM race_shosai r "
-             "WHERE r.kaisai_nen = %s AND r.kaisai_gappi = %s ORDER BY r.keibajo_code")
+        q = (
+            "SELECT DISTINCT r.keibajo_code FROM race_shosai r "
+            "WHERE r.kaisai_nen = %s AND r.kaisai_gappi = %s ORDER BY r.keibajo_code"
+        )
         df = run_query(q, params=(nen, gappi))
         if not df.empty:
-            venues_db = [CODE_TO_VENUE[c] for c in df["keibajo_code"].tolist() if c in CODE_TO_VENUE]
+            venues_db = [CODE_TO_VENUE[str(c).zfill(2)] for c in df["keibajo_code"].tolist() if str(c).zfill(2) in CODE_TO_VENUE]
             if venues_db:
                 return venues_db
     except Exception as e:
         logger.warning(f"DB当日開催場取得失敗: {e}")
 
-    # ③ フォールバック: 全場
     return []
 
 @st.cache_data(ttl=300)
@@ -1266,20 +1285,12 @@ target_date_str = global_target_date.strftime("%Y%m%d")
 
 # 当日のCSVファイル/DBから開催場のみ抽出して選択肢に表示
 today_venues = get_today_venues(target_date_str)
-if not today_venues:
-    st.sidebar.warning("当日の出馬表開催場が見つかりません。CSVまたはDBを確認してください。")
-    st.warning("当日の出馬表開催場が見つからないため、表示を続行できません。")
-    st.stop()
-
-prev_venue = st.session_state.get("sidebar_venue_name")
-default_idx = today_venues.index(prev_venue) if prev_venue in today_venues else 0
-venue_label = f"開催場（{len(today_venues)}場）"
-selected_venue_name = st.sidebar.selectbox(venue_label, today_venues, index=default_idx, key="sidebar_venue")
-st.session_state["sidebar_venue_name"] = selected_venue_name
+_prev_venue = st.session_state.get("_sidebar_venue_name")
+_default_idx = today_venues.index(_prev_venue) if _prev_venue in today_venues else 0
+_venue_label = f"競馬場（本日開催 {len(today_venues)}場）" if len(today_venues) < len(JRA_VENUES) else "競馬場"
+selected_venue_name = st.sidebar.selectbox(_venue_label, today_venues, index=_default_idx, key="sidebar_venue")
+st.session_state["_sidebar_venue_name"] = selected_venue_name
 selected_venue_code = JRA_VENUES.get(selected_venue_name)
-if selected_venue_code is None:
-    st.sidebar.error(f"会場コードを特定できません: {selected_venue_name}")
-    st.stop()
 db_combo_key = f"{target_date_str}_{selected_venue_code}"
 
 if st.session_state.get("last_db_combo_key") != db_combo_key:

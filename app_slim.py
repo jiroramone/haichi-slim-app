@@ -1,7 +1,5 @@
 from pathlib import Path
-
-content = Path('output/app_slim.py').read_text(encoding='utf-8')
-print(content[:200])
-print('---')
-print(len(content))
-print('print(os.path.getsize' in content)
+src = Path('output/app_slim.py').read_text(encoding='utf-8')
+print(len(src))
+print(src[:100])
+print(src[-200:])

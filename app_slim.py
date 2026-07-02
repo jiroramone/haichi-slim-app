@@ -296,7 +296,7 @@ def get_today_venues(target_date_str: str) -> list:
         logger.warning(f"DB当日開催場取得失敗: {e}")
 
     # ③ フォールバック: 全場
-    return list(JRA_VENUES.keys())
+    return []
 
 @st.cache_data(ttl=300)
 def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFrame:
@@ -381,48 +381,6 @@ def get_all_entries_of_day(target_date_str: str, keibajo_code: str) -> pd.DataFr
     if "オッズ" in df.columns:
         _ov = pd.to_numeric(df["オッズ"], errors="coerce")
         df["オッズ"] = (_ov / 10.0).round(1)
-    return df
-
-
-ODDSCOL_ALIASES = ["オッズ", "単勝", "単勝オッズ", "単勝ｵｯｽﾞ", "odds", "Odds", "winodds", "Win Odds", "tansho_odds"]
-POPCOL_ALIASES = ["人気", "単勝人気", "ninki", "Ninki", "popularity"]
-
-def normalize_numeric_text(val):
-    if pd.isna(val):
-        return np.nan
-    s = unicodedata.normalize("NFKC", str(val)).strip()
-    s = s.replace(",", "").replace("　", "").replace(" ", "")
-    if s in {"", "---", "-", "nan", "None"}:
-        return np.nan
-    m = re.search(r"\d+(?:\.\d+)?", s)
-    return float(m.group()) if m else np.nan
-
-def standardize_odds_columns(df):
-    rename_map = {}
-    normalized_cols = {unicodedata.normalize("NFKC", c).strip(): c for c in df.columns}
-
-    for alias in ODDSCOL_ALIASES:
-        alias_n = unicodedata.normalize("NFKC", alias).strip()
-        if alias_n in normalized_cols:
-            rename_map[normalized_cols[alias_n]] = "オッズ"
-            break
-
-    for alias in POPCOL_ALIASES:
-        alias_n = unicodedata.normalize("NFKC", alias).strip()
-        if alias_n in normalized_cols:
-            rename_map[normalized_cols[alias_n]] = "人気"
-            break
-
-    if rename_map:
-        df = df.rename(columns=rename_map)
-
-    if "オッズ" not in df.columns:
-        df["オッズ"] = np.nan
-    if "人気" not in df.columns:
-        df["人気"] = np.nan
-
-    df["オッズ"] = df["オッズ"].apply(normalize_numeric_text).round(1)
-    df["人気"] = pd.to_numeric(df["人気"].apply(normalize_numeric_text), errors="coerce").astype("Int64")
     return df
 
 def get_hanro_from_db(bango_tuple: tuple, race_date_str: str) -> pd.DataFrame:
